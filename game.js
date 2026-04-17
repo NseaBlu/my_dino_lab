@@ -18,6 +18,9 @@ function initGameCanvas() {
   const jumpVelocity = -720; // px/s
   const playerStartY = -120; // 初始高度（越小越高，0 是画布顶边）
   const groundY = canvas.height - 72; // 地面顶边 y
+  const obstacleSpeed = 320; // px/s
+  const obstacleSpawnGapMinSec = 1.2; // 最短生成间隔，避免贴脸
+  const obstacleSpawnGapMaxSec = 2.1; // 最长生成间隔，避免太空
 
   const state = {
     elapsedMs: 0,
@@ -35,7 +38,47 @@ function initGameCanvas() {
       vy: 0,
       onGround: false,
     },
+    obstacles: [],
+    nextSpawnInSec: 0,
   };
+
+  function randomRange(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function scheduleNextObstacle() {
+    state.nextSpawnInSec = randomRange(
+      obstacleSpawnGapMinSec,
+      obstacleSpawnGapMaxSec
+    );
+  }
+
+  function spawnObstacle() {
+    const width = randomRange(26, 42);
+    const height = randomRange(42, 68);
+    state.obstacles.push({
+      x: canvas.width + width,
+      y: state.ground.y - height,
+      width,
+      height,
+    });
+  }
+
+  function updateObstacles(deltaSec) {
+    state.nextSpawnInSec -= deltaSec;
+    if (state.nextSpawnInSec <= 0) {
+      spawnObstacle();
+      scheduleNextObstacle();
+    }
+
+    for (const obstacle of state.obstacles) {
+      obstacle.x -= obstacleSpeed * deltaSec;
+    }
+
+    state.obstacles = state.obstacles.filter(
+      (obstacle) => obstacle.x + obstacle.width > 0
+    );
+  }
 
   function updatePhysics(deltaSec) {
     const { player, gravity, ground } = state;
@@ -97,6 +140,12 @@ function initGameCanvas() {
     ctx.fillStyle = "#60a5fa";
     ctx.fillRect(player.x, player.y, player.width, player.height);
 
+    // Obstacle placeholders.
+    ctx.fillStyle = "#f97316";
+    for (const obstacle of state.obstacles) {
+      ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+    }
+
     ctx.fillStyle = "#f9fafb";
     ctx.font = "20px 'Segoe UI', 'Microsoft YaHei', sans-serif";
     ctx.fillText("重力下落演示运行中...", 20, 36);
@@ -113,6 +162,13 @@ function initGameCanvas() {
       20,
       112
     );
+    ctx.fillText(
+      `obstacles: ${state.obstacles.length} next: ${state.nextSpawnInSec.toFixed(
+        2
+      )}s`,
+      20,
+      136
+    );
   }
 
   let lastTimeMs = performance.now();
@@ -123,10 +179,12 @@ function initGameCanvas() {
     state.elapsedMs += deltaMs;
     state.frameCount += 1;
     updatePhysics(deltaSec);
+    updateObstacles(deltaSec);
     renderFrame();
     window.requestAnimationFrame(loop);
   }
 
+  scheduleNextObstacle();
   window.requestAnimationFrame(loop);
 }
 
