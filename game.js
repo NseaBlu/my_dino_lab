@@ -40,6 +40,7 @@ function initGameCanvas() {
     },
     obstacles: [],
     nextSpawnInSec: 0,
+    isGameOver: false,
   };
 
   function randomRange(min, max) {
@@ -80,6 +81,22 @@ function initGameCanvas() {
     );
   }
 
+  function checkPlayerObstacleCollision() {
+    const { player, obstacles } = state;
+    // 判定依据：玩家矩形与障碍矩形使用 AABB（轴对齐包围盒）重叠检测。
+    for (const obstacle of obstacles) {
+      const isSeparated =
+        player.x + player.width <= obstacle.x ||
+        player.x >= obstacle.x + obstacle.width ||
+        player.y + player.height <= obstacle.y ||
+        player.y >= obstacle.y + obstacle.height;
+      if (!isSeparated) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function updatePhysics(deltaSec) {
     const { player, gravity, ground } = state;
     const groundTop = ground.y;
@@ -102,7 +119,7 @@ function initGameCanvas() {
   }
 
   function tryJump() {
-    if (!state.player.onGround) {
+    if (state.isGameOver || !state.player.onGround) {
       return;
     }
     state.player.vy = jumpVelocity;
@@ -169,6 +186,19 @@ function initGameCanvas() {
       20,
       136
     );
+
+    if (state.isGameOver) {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = "bold 34px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+      ctx.fillText("游戏结束", canvas.width / 2, canvas.height / 2 - 8);
+      ctx.font = "18px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+      ctx.fillText("你撞到了障碍物", canvas.width / 2, canvas.height / 2 + 28);
+      ctx.textAlign = "start";
+    }
   }
 
   let lastTimeMs = performance.now();
@@ -178,8 +208,15 @@ function initGameCanvas() {
     lastTimeMs = nowMs;
     state.elapsedMs += deltaMs;
     state.frameCount += 1;
-    updatePhysics(deltaSec);
-    updateObstacles(deltaSec);
+
+    if (!state.isGameOver) {
+      updatePhysics(deltaSec);
+      updateObstacles(deltaSec);
+      if (checkPlayerObstacleCollision()) {
+        state.isGameOver = true;
+      }
+    }
+
     renderFrame();
     window.requestAnimationFrame(loop);
   }
