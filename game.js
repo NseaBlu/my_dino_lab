@@ -18,13 +18,22 @@ function initGameCanvas() {
   const jumpVelocity = -720; // px/s
   const playerStartY = -120; // 初始高度（越小越高，0 是画布顶边）
   const groundY = canvas.height - 72; // 地面顶边 y
-  const obstacleSpeed = 320; // px/s
-  const obstacleSpawnGapMinSec = 1.2; // 最短生成间隔，避免贴脸
-  const obstacleSpawnGapMaxSec = 2.1; // 最长生成间隔，避免太空
+  const obstacleSpeedBase = 260; // px/s
+  const obstacleSpeedMax = 420; // px/s cap
+  const obstacleSpawnGapMinBase = 1.2; // sec
+  const obstacleSpawnGapMaxBase = 2.1; // sec
+  const difficultyRampSec = 45; // 到达难度上限所需秒数
+  const warmupSec = 3.2; // 开局学习反应窗口
+  const distanceScale = 0.08; // px -> m
+  const jumpBufferSec = 0.12; // 提前按键可缓存，提升起跳手感
+  const coyoteTimeSec = 0.08; // 离地后短暂宽限，避免“踩边按不出”
 
   const state = {
     elapsedMs: 0,
     frameCount: 0,
+    runTimeSec: 0,
+    distanceM: 0,
+    score: 0,
     gravity,
     ground: {
       y: groundY,
@@ -37,20 +46,43 @@ function initGameCanvas() {
       height: 64,
       vy: 0,
       onGround: false,
+      coyoteTimerSec: 0,
     },
     obstacles: [],
     nextSpawnInSec: 0,
     isGameOver: false,
+    jumpBufferTimerSec: 0,
   };
 
   function randomRange(min, max) {
     return min + Math.random() * (max - min);
   }
 
+  function getDifficulty01() {
+    const ramp = Math.min(state.runTimeSec / difficultyRampSec, 1);
+    return ramp;
+  }
+
+  function getCurrentObstacleSpeed() {
+    const d = getDifficulty01();
+    return obstacleSpeedBase + (obstacleSpeedMax - obstacleSpeedBase) * d;
+  }
+
+  function getCurrentSpawnGapRange() {
+    const d = getDifficulty01();
+    const minGap = obstacleSpawnGapMinBase - 0.45 * d;
+    const maxGap = obstacleSpawnGapMaxBase - 0.55 * d;
+    return {
+      min: Math.max(minGap, 0.95),
+      max: Math.max(maxGap, 1.35),
+    };
+  }
+
   function scheduleNextObstacle() {
+    const gap = getCurrentSpawnGapRange();
     state.nextSpawnInSec = randomRange(
-      obstacleSpawnGapMinSec,
-      obstacleSpawnGapMaxSec
+      gap.min,
+      gap.max
     );
   }
 
@@ -66,12 +98,17 @@ function initGameCanvas() {
   }
 
   function updateObstacles(deltaSec) {
+    if (state.runTimeSec < warmupSec) {
+      return;
+    }
+
     state.nextSpawnInSec -= deltaSec;
     if (state.nextSpawnInSec <= 0) {
       spawnObstacle();
       scheduleNextObstacle();
     }
 
+    const obstacleSpeed = getCurrentObstacleSpeed();
     for (const obstacle of state.obstacles) {
       obstacle.x -= obstacleSpeed * deltaSec;
     }
@@ -104,9 +141,11 @@ function initGameCanvas() {
     if (player.onGround && player.y + player.height >= groundTop) {
       player.y = groundTop - player.height;
       player.vy = 0;
+      player.coyoteTimerSec = coyoteTimeSec;
       return;
     }
     player.onGround = false;
+    player.coyoteTimerSec = Math.max(player.coyoteTimerSec - deltaSec, 0);
 
     player.vy += gravity * deltaSec;
     player.y += player.vy * deltaSec;
@@ -115,24 +154,41 @@ function initGameCanvas() {
       player.y = groundTop - player.height;
       player.vy = 0;
       player.onGround = true;
+      player.coyoteTimerSec = coyoteTimeSec;
     }
   }
 
   function tryJump() {
-    if (state.isGameOver || !state.player.onGround) {
+    if (state.isGameOver) {
+      return;
+    }
+    const canJump = state.player.onGround || state.player.coyoteTimerSec > 0;
+    if (!canJump) {
       return;
     }
     state.player.vy = jumpVelocity;
     state.player.onGround = false;
+    state.player.coyoteTimerSec = 0;
+    state.jumpBufferTimerSec = 0;
+  }
+
+  function consumeBufferedJump(deltaSec) {
+    state.jumpBufferTimerSec = Math.max(state.jumpBufferTimerSec - deltaSec, 0);
+    if (state.jumpBufferTimerSec <= 0) {
+      return;
+    }
+    tryJump();
   }
 
   function handleKeyDown(event) {
-    if (event.code !== "ArrowUp") {
+    const isArrowUp = event.code === "ArrowUp" || event.key === "ArrowUp";
+    if (!isArrowUp) {
       return;
     }
 
     // Keep gameplay stable: stop default page scrolling on ArrowUp.
     event.preventDefault();
+    state.jumpBufferTimerSec = jumpBufferSec;
     tryJump();
   }
 
@@ -168,9 +224,9 @@ function initGameCanvas() {
     ctx.fillText("重力下落演示运行中...", 20, 36);
 
     ctx.font = "16px 'Segoe UI', 'Microsoft YaHei', sans-serif";
-    ctx.fillText(`frame: ${state.frameCount}`, 20, 64);
+    ctx.fillText(`distance: ${state.distanceM.toFixed(1)} m`, 20, 64);
     ctx.fillText(
-      `playerY: ${player.y.toFixed(1)} vy: ${player.vy.toFixed(1)}`,
+      `score: ${state.score}`,
       20,
       88
     );
@@ -179,13 +235,20 @@ function initGameCanvas() {
       20,
       112
     );
+    const currentSpeed = getCurrentObstacleSpeed();
+    const difficultyPercent = Math.round(getDifficulty01() * 100);
     ctx.fillText(
-      `obstacles: ${state.obstacles.length} next: ${state.nextSpawnInSec.toFixed(
-        2
-      )}s`,
+      `speed: ${currentSpeed.toFixed(0)} diff: ${difficultyPercent}%`,
       20,
       136
     );
+    ctx.fillText(`难度依据：存活时间越久，障碍越快且间隔更短`, 20, 160);
+
+    if (state.runTimeSec < warmupSec) {
+      const left = (warmupSec - state.runTimeSec).toFixed(1);
+      ctx.fillStyle = "#fde68a";
+      ctx.fillText(`开局练习窗口 ${left}s`, 20, 184);
+    }
 
     if (state.isGameOver) {
       ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
@@ -197,6 +260,11 @@ function initGameCanvas() {
       ctx.fillText("游戏结束", canvas.width / 2, canvas.height / 2 - 8);
       ctx.font = "18px 'Segoe UI', 'Microsoft YaHei', sans-serif";
       ctx.fillText("你撞到了障碍物", canvas.width / 2, canvas.height / 2 + 28);
+      ctx.fillText(
+        `本局距离 ${state.distanceM.toFixed(1)} m / 分数 ${state.score}`,
+        canvas.width / 2,
+        canvas.height / 2 + 56
+      );
       ctx.textAlign = "start";
     }
   }
@@ -210,7 +278,11 @@ function initGameCanvas() {
     state.frameCount += 1;
 
     if (!state.isGameOver) {
+      state.runTimeSec += deltaSec;
+      state.distanceM += getCurrentObstacleSpeed() * deltaSec * distanceScale;
+      state.score = Math.floor(state.distanceM * 10);
       updatePhysics(deltaSec);
+      consumeBufferedJump(deltaSec);
       updateObstacles(deltaSec);
       if (checkPlayerObstacleCollision()) {
         state.isGameOver = true;
