@@ -15,6 +15,7 @@ function initGameCanvas() {
 
   // ---- Tunable physics params ----
   const gravity = 1600; // px/s^2
+  const jumpVelocity = -720; // px/s
   const playerStartY = -120; // 初始高度（越小越高，0 是画布顶边）
   const groundY = canvas.height - 72; // 地面顶边 y
 
@@ -57,6 +58,26 @@ function initGameCanvas() {
     }
   }
 
+  function tryJump() {
+    if (!state.player.onGround) {
+      return;
+    }
+    state.player.vy = jumpVelocity;
+    state.player.onGround = false;
+  }
+
+  function handleKeyDown(event) {
+    if (event.code !== "ArrowUp") {
+      return;
+    }
+
+    // Keep gameplay stable: stop default page scrolling on ArrowUp.
+    event.preventDefault();
+    tryJump();
+  }
+
+  window.addEventListener("keydown", handleKeyDown, { passive: false });
+
   function renderFrame() {
     const t = state.elapsedMs / 1000;
 
@@ -86,6 +107,11 @@ function initGameCanvas() {
       `playerY: ${player.y.toFixed(1)} vy: ${player.vy.toFixed(1)}`,
       20,
       88
+    );
+    ctx.fillText(
+      `onGround: ${player.onGround ? "yes" : "no"} (ArrowUp to jump)`,
+      20,
+      112
     );
   }
 
