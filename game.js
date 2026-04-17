@@ -16,8 +16,8 @@ function initGameCanvas() {
   // ---- Tunable physics params ----
   const gravity = 1600; // px/s^2
   const jumpVelocity = -720; // px/s
-  const playerStartY = -120; // 初始高度（越小越高，0 是画布顶边）
   const groundY = canvas.height - 72; // 地面顶边 y
+  const playerStartY = groundY - 64; // 初始玩家底边贴地（等待开始态）
   const obstacleSpeedBase = 260; // px/s
   const obstacleSpeedMax = 420; // px/s cap
   const obstacleSpawnGapMinBase = 1.2; // sec
@@ -27,6 +27,11 @@ function initGameCanvas() {
   const distanceScale = 0.08; // px -> m
   const jumpBufferSec = 0.12; // 提前按键可缓存，提升起跳手感
   const coyoteTimeSec = 0.08; // 离地后短暂宽限，避免“踩边按不出”
+  const GAME_PHASE = {
+    READY: "READY",
+    PLAYING: "PLAYING",
+    GAMEOVER: "GAMEOVER",
+  };
 
   const state = {
     elapsedMs: 0,
@@ -50,9 +55,31 @@ function initGameCanvas() {
     },
     obstacles: [],
     nextSpawnInSec: 0,
-    isGameOver: false,
+    phase: GAME_PHASE.READY,
     jumpBufferTimerSec: 0,
   };
+
+  function resetRoundState() {
+    const { player, ground } = state;
+    state.runTimeSec = 0;
+    state.distanceM = 0;
+    state.score = 0;
+    state.obstacles = [];
+    state.jumpBufferTimerSec = 0;
+    state.nextSpawnInSec = 0;
+
+    player.y = ground.y - player.height;
+    player.vy = 0;
+    player.onGround = true;
+    player.coyoteTimerSec = coyoteTimeSec;
+
+    scheduleNextObstacle();
+  }
+
+  function startNewRound() {
+    resetRoundState();
+    state.phase = GAME_PHASE.PLAYING;
+  }
 
   function randomRange(min, max) {
     return min + Math.random() * (max - min);
@@ -159,7 +186,7 @@ function initGameCanvas() {
   }
 
   function tryJump() {
-    if (state.isGameOver) {
+    if (state.phase !== GAME_PHASE.PLAYING) {
       return;
     }
     const canJump = state.player.onGround || state.player.coyoteTimerSec > 0;
@@ -181,15 +208,34 @@ function initGameCanvas() {
   }
 
   function handleKeyDown(event) {
+    const isSpace = event.code === "Space" || event.key === " ";
     const isArrowUp = event.code === "ArrowUp" || event.key === "ArrowUp";
-    if (!isArrowUp) {
+    const isRestart = event.code === "KeyR" || event.key === "r" || event.key === "R";
+    if (!isSpace && !isArrowUp && !isRestart) {
       return;
     }
 
-    // Keep gameplay stable: stop default page scrolling on ArrowUp.
+    // Keep gameplay stable: stop default page scrolling on play keys.
     event.preventDefault();
-    state.jumpBufferTimerSec = jumpBufferSec;
-    tryJump();
+
+    if (state.phase === GAME_PHASE.READY) {
+      if (isSpace) {
+        startNewRound();
+      }
+      return;
+    }
+
+    if (state.phase === GAME_PHASE.GAMEOVER) {
+      if (isRestart) {
+        startNewRound();
+      }
+      return;
+    }
+
+    if (state.phase === GAME_PHASE.PLAYING && isArrowUp) {
+      state.jumpBufferTimerSec = jumpBufferSec;
+      tryJump();
+    }
   }
 
   window.addEventListener("keydown", handleKeyDown, { passive: false });
@@ -230,11 +276,7 @@ function initGameCanvas() {
       20,
       88
     );
-    ctx.fillText(
-      `onGround: ${player.onGround ? "yes" : "no"} (ArrowUp to jump)`,
-      20,
-      112
-    );
+    ctx.fillText(`onGround: ${player.onGround ? "yes" : "no"}`, 20, 112);
     const currentSpeed = getCurrentObstacleSpeed();
     const difficultyPercent = Math.round(getDifficulty01() * 100);
     ctx.fillText(
@@ -244,13 +286,25 @@ function initGameCanvas() {
     );
     ctx.fillText(`难度依据：存活时间越久，障碍越快且间隔更短`, 20, 160);
 
-    if (state.runTimeSec < warmupSec) {
+    if (state.phase === GAME_PHASE.PLAYING && state.runTimeSec < warmupSec) {
       const left = (warmupSec - state.runTimeSec).toFixed(1);
       ctx.fillStyle = "#fde68a";
       ctx.fillText(`开局练习窗口 ${left}s`, 20, 184);
     }
 
-    if (state.isGameOver) {
+    if (state.phase === GAME_PHASE.READY) {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = "bold 34px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+      ctx.fillText("准备开始", canvas.width / 2, canvas.height / 2 - 8);
+      ctx.font = "18px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+      ctx.fillText("按空格键开始", canvas.width / 2, canvas.height / 2 + 28);
+      ctx.fillText("进行中用 ↑ 跳跃", canvas.width / 2, canvas.height / 2 + 56);
+      ctx.textAlign = "start";
+    } else if (state.phase === GAME_PHASE.GAMEOVER) {
       ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -260,10 +314,11 @@ function initGameCanvas() {
       ctx.fillText("游戏结束", canvas.width / 2, canvas.height / 2 - 8);
       ctx.font = "18px 'Segoe UI', 'Microsoft YaHei', sans-serif";
       ctx.fillText("你撞到了障碍物", canvas.width / 2, canvas.height / 2 + 28);
+      ctx.fillText("按 R 键重开", canvas.width / 2, canvas.height / 2 + 56);
       ctx.fillText(
         `本局距离 ${state.distanceM.toFixed(1)} m / 分数 ${state.score}`,
         canvas.width / 2,
-        canvas.height / 2 + 56
+        canvas.height / 2 + 84
       );
       ctx.textAlign = "start";
     }
@@ -277,7 +332,7 @@ function initGameCanvas() {
     state.elapsedMs += deltaMs;
     state.frameCount += 1;
 
-    if (!state.isGameOver) {
+    if (state.phase === GAME_PHASE.PLAYING) {
       state.runTimeSec += deltaSec;
       state.distanceM += getCurrentObstacleSpeed() * deltaSec * distanceScale;
       state.score = Math.floor(state.distanceM * 10);
@@ -285,7 +340,7 @@ function initGameCanvas() {
       consumeBufferedJump(deltaSec);
       updateObstacles(deltaSec);
       if (checkPlayerObstacleCollision()) {
-        state.isGameOver = true;
+        state.phase = GAME_PHASE.GAMEOVER;
       }
     }
 
@@ -293,7 +348,8 @@ function initGameCanvas() {
     window.requestAnimationFrame(loop);
   }
 
-  scheduleNextObstacle();
+  resetRoundState();
+  state.phase = GAME_PHASE.READY;
   window.requestAnimationFrame(loop);
 }
 
