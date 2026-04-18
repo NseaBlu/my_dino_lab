@@ -179,9 +179,17 @@ function initGameCanvas() {
 
     if (player.vy >= 0 && player.y + player.height >= groundTop) {
       player.y = groundTop - player.height;
-      player.vy = 0;
-      player.onGround = true;
-      player.coyoteTimerSec = coyoteTimeSec;
+      // 落地时若仍有跳跃缓冲，只在这一帧起跳一次（避免缓冲期间每帧 tryJump 造成连跳）
+      if (state.jumpBufferTimerSec > 0) {
+        player.vy = jumpVelocity;
+        player.onGround = false;
+        player.coyoteTimerSec = 0;
+        state.jumpBufferTimerSec = 0;
+      } else {
+        player.vy = 0;
+        player.onGround = true;
+        player.coyoteTimerSec = coyoteTimeSec;
+      }
     }
   }
 
@@ -201,10 +209,6 @@ function initGameCanvas() {
 
   function consumeBufferedJump(deltaSec) {
     state.jumpBufferTimerSec = Math.max(state.jumpBufferTimerSec - deltaSec, 0);
-    if (state.jumpBufferTimerSec <= 0) {
-      return;
-    }
-    tryJump();
   }
 
   function handleKeyDown(event) {
@@ -233,12 +237,24 @@ function initGameCanvas() {
     }
 
     if (state.phase === GAME_PHASE.PLAYING && isArrowUp) {
+      if (event.repeat) {
+        return;
+      }
       state.jumpBufferTimerSec = jumpBufferSec;
       tryJump();
     }
   }
 
+  function handleKeyUp(event) {
+    const isArrowUp = event.code === "ArrowUp" || event.key === "ArrowUp";
+    if (!isArrowUp || state.phase !== GAME_PHASE.PLAYING) {
+      return;
+    }
+    state.jumpBufferTimerSec = 0;
+  }
+
   window.addEventListener("keydown", handleKeyDown, { passive: false });
+  window.addEventListener("keyup", handleKeyUp);
 
   function renderFrame() {
     const t = state.elapsedMs / 1000;
