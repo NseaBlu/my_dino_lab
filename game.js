@@ -6,18 +6,25 @@ function initGameCanvas() {
     console.warn("[my-dino] 未找到 #game-canvas，跳过初始化。");
     return;
   }
+  const statusEl = document.getElementById("game-status");
 
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     console.warn("[my-dino] 2D 上下文初始化失败。");
     return;
   }
+  // Reduce shimmer for low-res obstacle sprites when moving.
+  ctx.imageSmoothingEnabled = false;
 
   // ---- Tunable physics params ----
   const gravity = 1600; // px/s^2
   const jumpVelocity = -720; // px/s
   const groundY = canvas.height - 72; // 地面顶边 y
-  const playerStartY = groundY - 64; // 初始玩家底边贴地（等待开始态）
+  const playerStandWidth = 52;
+  const playerStandHeight = 64;
+  const playerCrouchWidth = 62;
+  const playerCrouchHeight = 40;
+  const playerStartY = groundY - playerStandHeight; // 初始玩家底边贴地（等待开始态）
   const obstacleSpeedBase = 260; // px/s
   const obstacleSpeedMax = 420; // px/s cap
   const obstacleSpawnGapMinBase = 1.2; // sec
@@ -27,6 +34,24 @@ function initGameCanvas() {
   const distanceScale = 0.08; // px -> m
   const jumpBufferSec = 0.12; // 提前按键可缓存，提升起跳手感
   const coyoteTimeSec = 0.08; // 离地后短暂宽限，避免“踩边按不出”
+  const pteroFrameDurationSec = 0.2;
+  const playerFrameDurationSec = 0.12;
+  const groundStripeGap = 32;
+  const groundStripeWidth = 14;
+  const groundStripeHeight = 4;
+  const obstacleSprites = {
+    cactusSmall: createSprite("./assets/obstacles/cactus-small.png"),
+    cactusLarge: createSprite("./assets/obstacles/cactus-large.png"),
+    ptero1: createSprite("./assets/obstacles/ptero-1.png"),
+    ptero2: createSprite("./assets/obstacles/ptero-2.png"),
+  };
+  const playerSprites = {
+    standing: createSprite("./assets/player/trex-standing.png"),
+    run1: createSprite("./assets/player/trex-run-1.png"),
+    run2: createSprite("./assets/player/trex-run-2.png"),
+    duck1: createSprite("./assets/player/trex-ducking.png"),
+    duck2: createSprite("./assets/player/trex-ducking-2.png"),
+  };
   const GAME_PHASE = {
     READY: "READY",
     PLAYING: "PLAYING",
@@ -47,16 +72,18 @@ function initGameCanvas() {
     player: {
       x: 120,
       y: playerStartY,
-      width: 52,
-      height: 64,
+      width: playerStandWidth,
+      height: playerStandHeight,
       vy: 0,
       onGround: false,
       coyoteTimerSec: 0,
+      isCrouching: false,
     },
     obstacles: [],
     nextSpawnInSec: 0,
     phase: GAME_PHASE.READY,
     jumpBufferTimerSec: 0,
+    groundScrollX: 0,
   };
 
   function resetRoundState() {
@@ -68,6 +95,8 @@ function initGameCanvas() {
     state.jumpBufferTimerSec = 0;
     state.nextSpawnInSec = 0;
 
+    player.isCrouching = false;
+    applyPlayerPose(playerStandWidth, playerStandHeight);
     player.y = ground.y - player.height;
     player.vy = 0;
     player.onGround = true;
@@ -81,8 +110,26 @@ function initGameCanvas() {
     state.phase = GAME_PHASE.PLAYING;
   }
 
+  function applyPlayerPose(nextWidth, nextHeight) {
+    const player = state.player;
+    const bottomY = player.y + player.height;
+    player.width = nextWidth;
+    player.height = nextHeight;
+    player.y = bottomY - player.height;
+  }
+
   function randomRange(min, max) {
     return min + Math.random() * (max - min);
+  }
+
+  function createSprite(src) {
+    const image = new Image();
+    image.src = src;
+    return image;
+  }
+
+  function isSpriteReady(image) {
+    return image.complete && image.naturalWidth > 0;
   }
 
   function getDifficulty01() {
@@ -114,13 +161,32 @@ function initGameCanvas() {
   }
 
   function spawnObstacle() {
-    const width = randomRange(26, 42);
-    const height = randomRange(42, 68);
+    const roll = Math.random();
+    let kind = "cactusSmall";
+    let width = 24;
+    let height = 48;
+
+    if (roll > 0.65 && roll <= 0.9) {
+      kind = "cactusLarge";
+      width = 32;
+      height = 62;
+    } else if (roll > 0.9) {
+      kind = "ptero";
+      width = 56;
+      height = 46;
+    }
+
+    let y = state.ground.y - height;
+    if (kind === "ptero") {
+      y = state.ground.y - height - randomRange(14, 52);
+    }
+
     state.obstacles.push({
       x: canvas.width + width,
-      y: state.ground.y - height,
+      y,
       width,
       height,
+      kind,
     });
   }
 
@@ -149,16 +215,30 @@ function initGameCanvas() {
     const { player, obstacles } = state;
     // 判定依据：玩家矩形与障碍矩形使用 AABB（轴对齐包围盒）重叠检测。
     for (const obstacle of obstacles) {
+      const hitbox = getObstacleHitbox(obstacle);
       const isSeparated =
-        player.x + player.width <= obstacle.x ||
-        player.x >= obstacle.x + obstacle.width ||
-        player.y + player.height <= obstacle.y ||
-        player.y >= obstacle.y + obstacle.height;
+        player.x + player.width <= hitbox.x ||
+        player.x >= hitbox.x + hitbox.width ||
+        player.y + player.height <= hitbox.y ||
+        player.y >= hitbox.y + hitbox.height;
       if (!isSeparated) {
         return true;
       }
     }
     return false;
+  }
+
+  function getObstacleHitbox(obstacle) {
+    if (obstacle.kind !== "ptero") {
+      return obstacle;
+    }
+    // Shrink ptero hitbox asymmetrically to better match body/tail silhouette.
+    return {
+      x: obstacle.x + 7,
+      y: obstacle.y + 6,
+      width: obstacle.width - 13,
+      height: obstacle.height - 12,
+    };
   }
 
   function updatePhysics(deltaSec) {
@@ -214,8 +294,9 @@ function initGameCanvas() {
   function handleKeyDown(event) {
     const isSpace = event.code === "Space" || event.key === " ";
     const isArrowUp = event.code === "ArrowUp" || event.key === "ArrowUp";
+    const isArrowDown = event.code === "ArrowDown" || event.key === "ArrowDown";
     const isRestart = event.code === "KeyR" || event.key === "r" || event.key === "R";
-    if (!isSpace && !isArrowUp && !isRestart) {
+    if (!isSpace && !isArrowUp && !isArrowDown && !isRestart) {
       return;
     }
 
@@ -243,14 +324,35 @@ function initGameCanvas() {
       state.jumpBufferTimerSec = jumpBufferSec;
       tryJump();
     }
+
+    // Crouch is ground-only to avoid midair pose forcing into ground.
+    if (state.phase === GAME_PHASE.PLAYING && isArrowDown) {
+      const { player } = state;
+      if (!player.onGround || player.isCrouching) {
+        return;
+      }
+      player.isCrouching = true;
+      applyPlayerPose(playerCrouchWidth, playerCrouchHeight);
+      player.y = state.ground.y - player.height;
+    }
   }
 
   function handleKeyUp(event) {
     const isArrowUp = event.code === "ArrowUp" || event.key === "ArrowUp";
-    if (!isArrowUp || state.phase !== GAME_PHASE.PLAYING) {
+    const isArrowDown = event.code === "ArrowDown" || event.key === "ArrowDown";
+    if (state.phase !== GAME_PHASE.PLAYING) {
       return;
     }
-    state.jumpBufferTimerSec = 0;
+    if (isArrowUp) {
+      state.jumpBufferTimerSec = 0;
+    }
+    if (isArrowDown && state.player.isCrouching) {
+      state.player.isCrouching = false;
+      applyPlayerPose(playerStandWidth, playerStandHeight);
+      if (state.player.onGround) {
+        state.player.y = state.ground.y - state.player.height;
+      }
+    }
   }
 
   window.addEventListener("keydown", handleKeyDown, { passive: false });
@@ -270,43 +372,23 @@ function initGameCanvas() {
     // Ground: stable collision surface for the player.
     ctx.fillStyle = "#16a34a";
     ctx.fillRect(0, ground.y, canvas.width, ground.height);
+    drawGroundStripes(ground.y);
 
-    // Player placeholder body.
-    ctx.fillStyle = "#60a5fa";
-    ctx.fillRect(player.x, player.y, player.width, player.height);
+    drawPlayer(player, t);
 
     // Obstacle placeholders.
     ctx.fillStyle = "#f97316";
     for (const obstacle of state.obstacles) {
-      ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+      drawObstacle(obstacle, t);
     }
 
     ctx.fillStyle = "#f9fafb";
     ctx.font = "20px 'Segoe UI', 'Microsoft YaHei', sans-serif";
-    ctx.fillText("重力下落演示运行中...", 20, 36);
+    ctx.textAlign = "right";
+    ctx.fillText(`score: ${state.score}`, canvas.width - 20, 36);
+    ctx.textAlign = "start";
 
-    ctx.font = "16px 'Segoe UI', 'Microsoft YaHei', sans-serif";
-    ctx.fillText(`distance: ${state.distanceM.toFixed(1)} m`, 20, 64);
-    ctx.fillText(
-      `score: ${state.score}`,
-      20,
-      88
-    );
-    ctx.fillText(`onGround: ${player.onGround ? "yes" : "no"}`, 20, 112);
-    const currentSpeed = getCurrentObstacleSpeed();
-    const difficultyPercent = Math.round(getDifficulty01() * 100);
-    ctx.fillText(
-      `speed: ${currentSpeed.toFixed(0)} diff: ${difficultyPercent}%`,
-      20,
-      136
-    );
-    ctx.fillText(`难度依据：存活时间越久，障碍越快且间隔更短`, 20, 160);
-
-    if (state.phase === GAME_PHASE.PLAYING && state.runTimeSec < warmupSec) {
-      const left = (warmupSec - state.runTimeSec).toFixed(1);
-      ctx.fillStyle = "#fde68a";
-      ctx.fillText(`开局练习窗口 ${left}s`, 20, 184);
-    }
+    updateStatusText();
 
     if (state.phase === GAME_PHASE.READY) {
       ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
@@ -340,6 +422,91 @@ function initGameCanvas() {
     }
   }
 
+  function updateStatusText() {
+    if (!(statusEl instanceof HTMLElement)) {
+      return;
+    }
+    const currentSpeed = getCurrentObstacleSpeed();
+    const difficultyPercent = Math.round(getDifficulty01() * 100);
+    let text = `distance: ${state.distanceM.toFixed(1)} m | onGround: ${
+      state.player.onGround ? "yes" : "no"
+    } | speed: ${currentSpeed.toFixed(0)} | diff: ${difficultyPercent}% | 难度依据：存活时间越久，障碍越快且间隔更短`;
+    if (state.phase === GAME_PHASE.PLAYING && state.runTimeSec < warmupSec) {
+      const left = (warmupSec - state.runTimeSec).toFixed(1);
+      text += ` | 开局练习窗口 ${left}s`;
+    }
+    statusEl.textContent = text;
+  }
+
+  function drawGroundStripes(groundTopY) {
+    const offset = ((state.groundScrollX % groundStripeGap) + groundStripeGap) % groundStripeGap;
+    const y = Math.round(groundTopY + 10);
+    ctx.fillStyle = "#15803d";
+    for (let x = -offset; x < canvas.width + groundStripeWidth; x += groundStripeGap) {
+      ctx.fillRect(
+        Math.round(x),
+        y,
+        groundStripeWidth,
+        groundStripeHeight
+      );
+    }
+  }
+
+  function getPlayerSprite(player, tSec) {
+    if (state.phase !== GAME_PHASE.PLAYING) {
+      return playerSprites.standing;
+    }
+    if (!player.onGround) {
+      return playerSprites.standing;
+    }
+    const frameIndex = Math.floor(tSec / playerFrameDurationSec) % 2;
+    if (player.isCrouching) {
+      return frameIndex === 0 ? playerSprites.duck1 : playerSprites.duck2;
+    }
+    return frameIndex === 0 ? playerSprites.run1 : playerSprites.run2;
+  }
+
+  function drawPlayer(player, tSec) {
+    const drawX = Math.round(player.x);
+    const drawY = Math.round(player.y);
+    const sprite = getPlayerSprite(player, tSec);
+    if (sprite && isSpriteReady(sprite)) {
+      ctx.drawImage(sprite, drawX, drawY, player.width, player.height);
+      return;
+    }
+
+    // Fallback when player image is not loaded yet.
+    ctx.fillStyle = "#60a5fa";
+    ctx.fillRect(drawX, drawY, player.width, player.height);
+  }
+
+  function drawObstacle(obstacle, tSec) {
+    let sprite = null;
+    if (obstacle.kind === "cactusSmall") {
+      sprite = obstacleSprites.cactusSmall;
+    } else if (obstacle.kind === "cactusLarge") {
+      sprite = obstacleSprites.cactusLarge;
+    } else if (obstacle.kind === "ptero") {
+      const frameIndex = Math.floor(tSec / pteroFrameDurationSec) % 2;
+      sprite = frameIndex === 0 ? obstacleSprites.ptero1 : obstacleSprites.ptero2;
+    }
+
+    if (sprite && isSpriteReady(sprite)) {
+      const drawX = Math.round(obstacle.x);
+      const drawY = Math.round(obstacle.y);
+      ctx.drawImage(sprite, drawX, drawY, obstacle.width, obstacle.height);
+      return;
+    }
+
+    // Fallback when image is not loaded yet.
+    ctx.fillRect(
+      Math.round(obstacle.x),
+      Math.round(obstacle.y),
+      obstacle.width,
+      obstacle.height
+    );
+  }
+
   let lastTimeMs = performance.now();
   function loop(nowMs) {
     const deltaMs = Math.min(nowMs - lastTimeMs, 100);
@@ -349,6 +516,7 @@ function initGameCanvas() {
     state.frameCount += 1;
 
     if (state.phase === GAME_PHASE.PLAYING) {
+      state.groundScrollX += getCurrentObstacleSpeed() * deltaSec;
       state.runTimeSec += deltaSec;
       state.distanceM += getCurrentObstacleSpeed() * deltaSec * distanceScale;
       state.score = Math.floor(state.distanceM * 10);

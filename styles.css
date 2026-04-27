@@ -44,3 +44,10 @@ body {
   height: auto;
   background: linear-gradient(#7dd3fc 70%, #86efac 70%);
 }
+
+.game-status {
+  margin: 12px 0 0;
+  max-width: 960px;
+  color: #334155;
+  font-size: 0.95rem;
+}
