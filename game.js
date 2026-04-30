@@ -39,6 +39,11 @@ function initGameCanvas() {
   const groundStripeGap = 32;
   const groundStripeWidth = 14;
   const groundStripeHeight = 4;
+  // Sky clouds (visual only; driven by elapsed time in render, no gameplay hooks).
+  const cloudWrapW = 1280;
+  const cloudDriftPxPerSec = 20;
+  const cloudCount = 10;
+  const cloudSkyTop = 6;
   const obstacleSprites = {
     cactusSmall: createSprite("./assets/obstacles/cactus-small.png"),
     cactusLarge: createSprite("./assets/obstacles/cactus-large.png"),
@@ -63,6 +68,7 @@ function initGameCanvas() {
     frameCount: 0,
     runTimeSec: 0,
     distanceM: 0,
+    scoreAcc: 0,
     score: 0,
     gravity,
     ground: {
@@ -90,6 +96,7 @@ function initGameCanvas() {
     const { player, ground } = state;
     state.runTimeSec = 0;
     state.distanceM = 0;
+    state.scoreAcc = 0;
     state.score = 0;
     state.obstacles = [];
     state.jumpBufferTimerSec = 0;
@@ -122,6 +129,20 @@ function initGameCanvas() {
     return min + Math.random() * (max - min);
   }
 
+  const cloudSkyBottom = groundY - 40;
+  function buildSkyClouds() {
+    const list = [];
+    for (let i = 0; i < cloudCount; i++) {
+      list.push({
+        x0: randomRange(0, cloudWrapW),
+        y: randomRange(cloudSkyTop, cloudSkyBottom),
+        s: randomRange(0.48, 1.05),
+      });
+    }
+    return list;
+  }
+  const skyClouds = buildSkyClouds();
+
   function createSprite(src) {
     const image = new Image();
     image.src = src;
@@ -140,6 +161,11 @@ function initGameCanvas() {
   function getCurrentObstacleSpeed() {
     const d = getDifficulty01();
     return obstacleSpeedBase + (obstacleSpeedMax - obstacleSpeedBase) * d;
+  }
+
+  function getCurrentScoreRate() {
+    const d = getDifficulty01();
+    return 10 + 8 * d;
   }
 
   function getCurrentSpawnGapRange() {
@@ -214,13 +240,14 @@ function initGameCanvas() {
   function checkPlayerObstacleCollision() {
     const { player, obstacles } = state;
     // 判定依据：玩家矩形与障碍矩形使用 AABB（轴对齐包围盒）重叠检测。
+    const playerHitbox = getPlayerHitbox(player);
     for (const obstacle of obstacles) {
       const hitbox = getObstacleHitbox(obstacle);
       const isSeparated =
-        player.x + player.width <= hitbox.x ||
-        player.x >= hitbox.x + hitbox.width ||
-        player.y + player.height <= hitbox.y ||
-        player.y >= hitbox.y + hitbox.height;
+        playerHitbox.x + playerHitbox.width <= hitbox.x ||
+        playerHitbox.x >= hitbox.x + hitbox.width ||
+        playerHitbox.y + playerHitbox.height <= hitbox.y ||
+        playerHitbox.y >= hitbox.y + hitbox.height;
       if (!isSeparated) {
         return true;
       }
@@ -228,7 +255,40 @@ function initGameCanvas() {
     return false;
   }
 
+  function getPlayerHitbox(player) {
+    if (player.isCrouching) {
+      return {
+        x: player.x + 8,
+        y: player.y + 6,
+        width: player.width - 16,
+        height: player.height - 10,
+      };
+    }
+    return {
+      x: player.x + 8,
+      y: player.y + 5,
+      width: player.width - 16,
+      height: player.height - 10,
+    };
+  }
+
   function getObstacleHitbox(obstacle) {
+    if (obstacle.kind === "cactusSmall") {
+      return {
+        x: obstacle.x + 4,
+        y: obstacle.y + 5,
+        width: obstacle.width - 8,
+        height: obstacle.height - 8,
+      };
+    }
+    if (obstacle.kind === "cactusLarge") {
+      return {
+        x: obstacle.x + 5,
+        y: obstacle.y + 4,
+        width: obstacle.width - 10,
+        height: obstacle.height - 8,
+      };
+    }
     if (obstacle.kind !== "ptero") {
       return obstacle;
     }
@@ -367,6 +427,8 @@ function initGameCanvas() {
     ctx.fillStyle = `rgb(${bgShade}, ${bgShade + 20}, ${bgShade + 40})`;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    drawSkyClouds(t);
+
     const { ground, player } = state;
 
     // Ground: stable collision surface for the player.
@@ -452,6 +514,34 @@ function initGameCanvas() {
     }
   }
 
+  function drawPuffCloud(screenX, skyY, scale) {
+    const r = 17 * scale;
+    ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
+    ctx.beginPath();
+    ctx.arc(screenX, skyY, r, 0, Math.PI * 2);
+    ctx.arc(screenX + r * 1.05, skyY - r * 0.12, r * 0.92, 0, Math.PI * 2);
+    ctx.arc(screenX + r * 2.05, skyY, r * 0.88, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawSkyClouds(tSec) {
+    const scroll = tSec * cloudDriftPxPerSec;
+    const margin = 80;
+    for (const c of skyClouds) {
+      const worldX = c.x0 - scroll;
+      const rApprox = 17 * c.s * 2.8;
+      const n0 = Math.floor((-margin - rApprox - worldX) / cloudWrapW);
+      const n1 = Math.ceil((canvas.width + margin + rApprox - worldX) / cloudWrapW);
+      for (let n = n0; n <= n1; n++) {
+        const x = worldX + n * cloudWrapW;
+        if (x + rApprox < -margin || x - rApprox > canvas.width + margin) {
+          continue;
+        }
+        drawPuffCloud(x, c.y, c.s);
+      }
+    }
+  }
+
   function getPlayerSprite(player, tSec) {
     if (state.phase !== GAME_PHASE.PLAYING) {
       return playerSprites.standing;
@@ -519,7 +609,8 @@ function initGameCanvas() {
       state.groundScrollX += getCurrentObstacleSpeed() * deltaSec;
       state.runTimeSec += deltaSec;
       state.distanceM += getCurrentObstacleSpeed() * deltaSec * distanceScale;
-      state.score = Math.floor(state.distanceM * 10);
+      state.scoreAcc += getCurrentScoreRate() * deltaSec;
+      state.score = Math.floor(state.scoreAcc);
       updatePhysics(deltaSec);
       consumeBufferedJump(deltaSec);
       updateObstacles(deltaSec);
