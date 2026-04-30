@@ -63,3 +63,4 @@ my_dino_lab/
 
 - 本项目代码主要通过 Cursor 协作完成
 - 提示词与教学拆解记录见：[`Teaching-AI.md`](./Teaching-AI.md)
+
